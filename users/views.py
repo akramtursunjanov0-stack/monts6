@@ -1,81 +1,99 @@
-from django.shortcuts import render
+from django.db import transaction
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from django.contrib.auth import authenticate
-from .serializers import RegistrationSerializers
+from rest_framework.authtoken.models import Token
+from rest_framework.generics import CreateAPIView
+
+from .serializers import (
+    RegisterValidateSerializer,
+    AuthValidateSerializer,
+    ConfirmationSerializer,
+)
 from .models import ConfirmationCode
+import random
+import string
 from django.contrib.auth import get_user_model
+
 
 CustomUser = get_user_model()
 
-class AuthorizationAPIView(APIView):
+
+class AuthorizationAPIView(CreateAPIView):
+    serializer_class = AuthValidateSerializer
+
     def post(self, request):
-        username = request.data.get('username')
-        password = request.data.get('password')
+        serializer = AuthValidateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
 
-        user = authenticate(username=username, password=password)
+        user = authenticate(**serializer.validated_data)
 
-        if user is not None:
-            return Response(status=status.HTTP_200_OK)
+        if user:
+            if not user.is_active:
+                return Response(
+                    status=status.HTTP_401_UNAUTHORIZED,
+                    data={"error": "CustomUser account is not activated yet!"},
+                )
 
-        if not user.is_active:
-            return Response(data={'erros': "Пользователь не зареган!"}, status=status.HTTP_403_FORBIDDEN)
+            token, _ = Token.objects.get_or_create(user=user)
+            return Response(data={"key": token.key})
 
-        return Response(status=status.HTTP_401_UNAUTHORIZED)
+        return Response(
+            status=status.HTTP_401_UNAUTHORIZED,
+            data={"error": "CustomUser credentials are wrong!"},
+        )
 
 
-class RegistrationAPIView(APIView):
+class RegistrationAPIView(CreateAPIView):
+    serializer_class = RegisterValidateSerializer
+
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        email = serializer.validated_data["email"]
+        password = serializer.validated_data["password"]
+
+        # Use transaction to ensure data consistency
+        with transaction.atomic():
+            user = CustomUser.objects.create_user(
+                email=email, password=password, is_active=False
+            )
+
+            # Create a random 6-digit code
+            code = "".join(random.choices(string.digits, k=6))
+
+            confirmation_code = ConfirmationCode.objects.create(user=user, code=code)
+
+        return Response(
+            status=status.HTTP_201_CREATED,
+            data={"user_id": user.id, "confirmation_code": code},
+        )
+
+
+class ConfirmUserAPIView(CreateAPIView):
+    serializer_class = ConfirmationSerializer
+
     def post(self, request):
-        serializers = RegistrationSerializers(data=request.data)
-        serializers.is_valid(raise_exception=True)
+        serializer = ConfirmationSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
 
-        username = request.data.get("username")
-        password = request.data.get("password")
+        user_id = serializer.validated_data["user_id"]
 
-        user = CustomUser.objects.create_user(username=username, password=password, is_active=False)
-        code = ConfirmationCode.generate_code()
-        ConfirmationCode.objects.create(user=user, code=code)
-
-        print(f"Код подтверждения для {username}: {code}")
-        if user is not None:
-            return Response(data={"user_id": user.id}, status=status.HTTP_201_CREATED)
-        return Response(status=status.HTTP_401_UNAUTHORIZED)
-    
-
-
-class ConfrimationAPIView(APIView):
-    def post(self, request):
-        username = request.data.get("username")
-        code = request.data.get("code")
-
-        if not username or not code:
-            return Response(data={"errors": "Необходимо указать юзернейм или код"}, status=status.HTTP_400_BAD_REQUEST)
-        try:
-            user = CustomUser.objects.get(username=username)
-
-            if user.is_active:
-                return Response(data={'errors': 'Уже активировали код для этого пользователя!'})
-            confirm = ConfirmationCode.objects.get(user=user, code=code)
-            
+        with transaction.atomic():
+            user = CustomUser.objects.get(id=user_id)
             user.is_active = True
             user.save()
 
-            confirm.delete()
+            token, _ = Token.objects.get_or_create(user=user)
 
-            return Response(
-                {"message": "Пользователь успешно активирован"},
-                status=status.HTTP_200_OK
-            )
+            ConfirmationCode.objects.filter(user=user).delete()
 
-        except CustomUser.DoesNotExist:
-            return Response(
-                {"error": "Пользователь не найден"},
-                status=status.HTTP_404_NOT_FOUND
-            )
-        
-        except ConfirmationCode.DoesNotExist:
-            return Response(
-                {"errors": "Неверный код подтверждения"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+        return Response(
+            status=status.HTTP_200_OK,
+            data={
+                "message": "CustomUser аккаунт успешно активирован",
+                "key": token.key,
+            },
+        )
