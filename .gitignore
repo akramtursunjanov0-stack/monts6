@@ -1,0 +1,26 @@
+.env
+# Секреты
+
+.env.local
+
+# Зависимости
+node_modules/
+vendor/
+venv/
+
+# Результаты сборки
+build/
+dist/
+*.exe
+*.dll
+
+# Логи
+*.log
+
+# Файлы IDE
+.idea/
+.vscode/
+*.swp
+
+# macOS
+.DS_Store

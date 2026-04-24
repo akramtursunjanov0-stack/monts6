@@ -5,9 +5,7 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.viewsets import ModelViewSet
-
 from common.permissions import IsAnonymous, IsOwner, IsModerator
-
 from .models import Category, Product, Review
 from .serializers import (
     CategorySerializer,
@@ -18,6 +16,7 @@ from .serializers import (
     ReviewSerializer,
     ReviewValidateSerializer,
 )
+from django.core.cache import cache
 
 PAGE_SIZE = 5
 
@@ -74,8 +73,19 @@ class ProductListCreateAPIView(ListCreateAPIView):
     queryset = Product.objects.select_related("category").all()
     serializer_class = ProductSerializer
     pagination_class = CustomPagination
-    # permission_classes = [IsModerator,]
+    # permission_classes = [IsOwner,]       
+    permission_classes = [IsOwner | IsAnonymous]
 
+    def get(self, request, *args, **kwargs):
+        cached_data = cache.get("product_list")
+        if cached_data:
+            print("Redis cache")
+            return Response(data=cached_data, status=status.HTTP_200_OK)
+        response = super().get(self, request, *args, **kwargs)
+        print("Postgres data")
+        if response.data.get("total", 0) > 0:
+            cache.set("product_list", response.data, timeout=300)
+        return response        
     def post(self, request, *args, **kwargs):
         serializer = ProductValidateSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
