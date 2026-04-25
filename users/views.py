@@ -14,11 +14,9 @@ from .models import ConfirmationCode
 import random
 import string
 from django.contrib.auth import get_user_model
-
+from django.core.cache import cache
 
 CustomUser = get_user_model()
-
-
 class AuthorizationAPIView(CreateAPIView):
     serializer_class = AuthValidateSerializer
 
